@@ -590,7 +590,7 @@ void SendRtpData(void )
 
 void AddFrameToRtpListBUf(int nChanNum, unsigned char bIFrm,VENC_STREAM_S *pstStream)
 {
-	//adaczxczc
+	
 	int i,j,lens;
 	g_nSendDataChn = nChanNum;
 	g_rtpPack[nChanNum].nVidLen =0;
