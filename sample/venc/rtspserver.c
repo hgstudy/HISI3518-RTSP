@@ -313,9 +313,10 @@ void* RtspServerListen(void *pParam)
 
 void SendRtpData(void )
 {
+	//
 		int i=0;
 		int nChanNum=0;
-		for(i=0; i<MAX_RTSP_CLIENT;i++)   //
+		for(i=0; i<1;i++)   //MAX_RTSP_CLIENT
 		{
 			if(g_rtspClients[i].status!=RTSP_SENDING)
 			{
@@ -330,267 +331,223 @@ void SendRtpData(void )
 			server.sin_addr.s_addr=inet_addr(g_rtspClients[i].IP); //DEST_IP
 			int bytes = 0;
 		//	float frametate =25;
-			unsigned int timestamp_increse=0;
-			timestamp_increse=3600;//(unsigned int)(90000.0 / frametate); 
+			static unsigned int ts_current=0;
+			ts_current+=3600;//(unsigned int)(90000.0 / frametate); 
 
-			char* nalu_payload;
-			int nAvFrmLen = 0;
-			int nIsIFrm = 0;
-			int nNaluType = 0;
 			char sendbuf[1024*1024];
-			int nReg;
-			unsigned char u8NaluBytes;    //nalu首byte
-			nIsIFrm = g_rtpPack[nChanNum].bIsIFrm;
-			nAvFrmLen = g_rtpPack[nChanNum].nVidLen;  //发送的视频数据长度
-
-
-			u8NaluBytes = g_rtpPack[nChanNum].vidBuf[4];
-			printf("naulu:%x \n",u8NaluBytes);
+			int nAvFrmLen = g_rtpPack[nChanNum].nVidLen;            //发送的视频数据长度;
+			unsigned char u8NaluBytes = g_rtpPack[nChanNum].vidBuf[0];  //nalu首byte
+			//printf("type:%x\n",u8NaluBytes);
 			/*******************************/
 			/******视频发送*****************/
 			/*******************************/
 			//rtp固定包头，为12字节,该句将sendbuf[0]的地址赋给rtp_hdr，
 			//以后对rtp_hdr的写入操作将直接写入sendbuf。
-			rtp_hdr =(RTP_FIXED_HEADER*)&sendbuf[0]; 
-			//设置RTP HEADER，
-			rtp_hdr->payload     = RTP_H264;       //负载类型号，
-			rtp_hdr->version     = 2;          //版本号，此版本固定为2
-			rtp_hdr->marker    = 0;            //标志位，由具体协议规定其值。
-			rtp_hdr->ssrc      = htonl(10);   //随机指定为10，并且在本RTP会话中全局唯一
 			if(nAvFrmLen<=1400)
 			{
-				//设置rtp M 位；
-				rtp_hdr->marker  = 1;
-				rtp_hdr->seq_no  = htons(g_rtspClients[i].seqnum++); //序列号，每发送一个RTP包增1
+				/*
+				* 1.设置 rtp 头 
+				*/
+				rtp_hdr =(RTP_FIXED_HEADER*)&sendbuf[0]; 
+				rtp_hdr->csrc_len   = 0;
+				rtp_hdr->extension  = 0;
+				rtp_hdr->padding    = 0;
+				rtp_hdr->version    = 2;          //byte0
+				
+				rtp_hdr->payload    = RTP_H264;   //负载类型号，
+				rtp_hdr->marker     = 0;          //标志位，由具体协议规定其值。
+				
+				rtp_hdr->seq_no     = htons(g_rtspClients[i].seqnum++); //序列号，每发送一个RTP包增1
+				
+				rtp_hdr->timestamp  = htonl(ts_current);
+				
+				rtp_hdr->ssrc       = htonl(10);   //随机指定为10，并且在本RTP会话中全局唯一
+
+				/*
+            	 * 2. 设置rtp荷载 single nal unit 头
+             	 */
 				nalu_hdr         = (NALU_HEADER*)&sendbuf[12]; 
 				nalu_hdr->F      = (u8NaluBytes & 0x80) >> 7; 
-				nalu_hdr->NRI    = (u8NaluBytes & 0x60) >> 5; 
+				nalu_hdr->NRI    = (u8NaluBytes & 0x60) >> 5 ; 
 				nalu_hdr->TYPE   = u8NaluBytes & 0x1f;
-				
-				nalu_payload=&sendbuf[13];//同理将sendbuf[13]赋给nalu_payload
-				memcpy(nalu_payload,g_rtpPack[nChanNum].vidBuf,g_rtpPack[nChanNum].nVidLen);
-				g_rtspClients[i].tsvid=g_rtspClients[i].tsvid+timestamp_increse;
-				
-				rtp_hdr->timestamp=htonl(g_rtspClients[i].tsvid);
-				bytes=g_rtpPack[nChanNum].nVidLen + 13 ;				
-				sendto(udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
-			}
-			else if(nAvFrmLen>1400)
-			{
-				//得到该nalu需要用多少长度为1400字节的RTP包来发送
-				int k=0,l=0;
-				k=nAvFrmLen/1400;//需要k个1400字节的RTP包
-				l=nAvFrmLen%1400;//最后一个RTP包的需要装载的字节数
-				int t=0;         //用于指示当前发送的是第几个分片RTP包
-				g_rtspClients[i].tsvid=g_rtspClients[i].tsvid+timestamp_increse;
-				rtp_hdr->timestamp=htonl(g_rtspClients[i].tsvid);
-				while(t<=k)
-				{
-					rtp_hdr->seq_no = htons(g_rtspClients[i].seqnum++); //序列号，每发送一个RTP包增1
-					if(t==0)
-					{
-						//设置rtp M 位；
-						rtp_hdr->marker = 0;
-						fu_ind         = (FU_INDICATOR*)&sendbuf[12];
-						fu_ind->F      = (u8NaluBytes & 0x80) >> 7;   //n->forbidden_bit;
-						fu_ind->NRI    = (u8NaluBytes & 0x60) >> 5; //n->nal_reference_idc>>5;
-						fu_ind->TYPE   = 28;
-						
-						//设置FU HEADER,并将这个HEADER填入sendbuf[13]
-						fu_hdr         =(FU_HEADER*)&sendbuf[13];
-						fu_hdr->E      =0;
-						fu_hdr->R      =0;
-						fu_hdr->S      =1;
-						fu_hdr->TYPE   =u8NaluBytes & 0x1f;  //n->nal_unit_type;
-						
-						nalu_payload=&sendbuf[14];//同理将sendbuf[14]赋给nalu_payload
-						memcpy(nalu_payload,g_rtpPack[nChanNum].vidBuf,1400);//去掉NALU头
-						
-						bytes=1400+14;						
-						sendto( udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
-						t++;
-						
-					}
-					else if(k==t)
-					{
-						
-						//设置rtp M 位；当前传输的是最后一个分片时该位置1
-						rtp_hdr->marker=1;
-						fu_ind =(FU_INDICATOR*)&sendbuf[12]; 
-						fu_ind->F= 0 ;   //n->forbidden_bit;
-						fu_ind->NRI= nIsIFrm ;  //n->nal_reference_idc>>5;
-						fu_ind->TYPE=28;
-						
-						//设置FU HEADER,并将这个HEADER填入sendbuf[13]
-						fu_hdr =(FU_HEADER*)&sendbuf[13];
-						fu_hdr->R=0;
-						fu_hdr->S=0;
-						fu_hdr->TYPE= u8NaluBytes & 0x1f;
-						fu_hdr->E=1;
-						
-						nalu_payload=&sendbuf[14];
-						memcpy(nalu_payload,g_rtpPack[nChanNum].vidBuf+t*1400,l);
-						bytes=l+14;		
-						sendto(udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
-						t++;
-					}
-					else if(t<k && t!=0)
-					{
-						//设置rtp M 位；
-						rtp_hdr->marker=0;
-						//设置FU INDICATOR,并将这个HEADER填入sendbuf[12]
-						fu_ind =(FU_INDICATOR*)&sendbuf[12]; 
-						fu_ind->F=0;  //n->forbidden_bit;
-						fu_ind->NRI=nIsIFrm;//n->nal_reference_idc>>5;
-						fu_ind->TYPE=28;
-						
-						//设置FU HEADER,并将这个HEADER填入sendbuf[13]
-						fu_hdr =(FU_HEADER*)&sendbuf[13];
-						//fu_hdr->E=0;
-						fu_hdr->R=0;
-						fu_hdr->S=0;
-						fu_hdr->E=0;
-						fu_hdr->TYPE=nNaluType;
-						
-						nalu_payload=&sendbuf[14];
-						memcpy(nalu_payload,g_rtpPack[nChanNum].vidBuf+t*1400,1400);
-						bytes=1400+14;						
-						sendto(udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
-						t++;
-					}
-				}
-			} 
-#if 0
-			/*******************************/
-			/******音频发送*****************/
-			/*******************************/
-			//timestamp_increse=(unsigned int)(8000.0 / framerate);
-			timestamp_increse = 8000;
-			memset(sendbuf,0,sizeof(sendbuf));
-			nAvFrmLen = g_rtpPack[nChanNum].nAudLen;
-			
-			rtp_hdr =(RTP_FIXED_HEADER*)&sendbuf[0]; 
-			//设置RTP HEADER，
-			rtp_hdr->payload     = RTP_G726;  
-			rtp_hdr->version     = 2;        
-			rtp_hdr->marker    = 0;          
-			rtp_hdr->ssrc      = htonl(10);  
 
-			//printf("-------------------------------%d\n",nAvFrmLen);
-			if(nAvFrmLen<=1400)
-			{
-				//设置rtp M 位；
-				rtp_hdr->marker=0;
-				rtp_hdr->seq_no     = htons(g_rtspClients[i].seqnum++);
-				nalu_hdr =(NALU_HEADER*)&sendbuf[12]; 
-				nalu_hdr->F=0; 
-				nalu_hdr->NRI=  nIsIFrm; 
-				nalu_hdr->TYPE=  nNaluType;
-				
-				nalu_payload=&sendbuf[13];
-				memcpy(nalu_payload,g_rtpPack[nChanNum].audBuf,g_rtpPack[nChanNum].nAudLen);
-				g_rtspClients[i].tsaud=g_rtspClients[i].tsaud+timestamp_increse;
-				
-				rtp_hdr->timestamp=htonl(g_rtspClients[i].tsaud);
-				bytes=g_rtpPack[nChanNum].nAudLen + 13 ;				
+
+				 /*
+             	  * 3. 填充nal内容
+             	  */
+				memcpy(sendbuf+13,g_rtpPack[nChanNum].vidBuf+1,g_rtpPack[nChanNum].nVidLen-1);
+
+				 /*
+             	  * 4. 发送打包好的rtp到客户端
+                  */
+				bytes=g_rtpPack[nChanNum].nVidLen + 12 ;				
 				sendto(udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
 			}
-			else if(nAvFrmLen>1400)
+			else// if(nAvFrmLen>1400)
 			{
-				printf("-------->1400-----------------------%d\n",nAvFrmLen);
-				int k=0,l=0;
-				k=nAvFrmLen/1400;//需要k个1400字节的RTP包
-				l=nAvFrmLen%1400;//最后一个RTP包的需要装载的字节数
-				int t=0;         //用于指示当前发送的是第几个分片RTP包
-				g_rtspClients[i].tsaud=g_rtspClients[i].tsaud+timestamp_increse;
-				rtp_hdr->timestamp=htonl(g_rtspClients[i].tsaud);
-				while(t<=k)
+				int fu_pack_num;        /* nalu 需要分片发送时分割的个数 */
+			    int last_fu_pack_size;  /* 最后一个分片的大小 */
+			    int fu_seq;             /* fu-A 序号 */
+				
+				/*
+             	* 1. 计算分割的个数
+            	*
+             	* 除最后一个分片外，
+             	* 每一个分片消耗 RTP_PAYLOAD_MAX_SIZE BYLE
+             	*/
+             	fu_pack_num = nAvFrmLen%1400 ? (nAvFrmLen/1400 + 1) : nAvFrmLen/1400;
+				last_fu_pack_size = nAvFrmLen % 1400 ? nAvFrmLen % 1400 : 1400;
+				for(fu_seq = 0; fu_seq < fu_pack_num; fu_seq++)
 				{
-					rtp_hdr->seq_no = htons(g_rtspClients[i].seqnum++); 
-					if(t==0)
-					{
-						//设置rtp M 位；
-						rtp_hdr->marker=0;
-						fu_ind =(FU_INDICATOR*)&sendbuf[12];
-						fu_ind->F= 0;   
-						fu_ind->NRI= nIsIFrm; 
-						fu_ind->TYPE=28;
+					/*
+                 	* 根据FU-A的类型设置不同的rtp头和rtp荷载头
+                 	*/
+                 	 if (fu_seq == 0) 
+					 {  /* 第一个FU-A */
+	                    /*
+						* 1.设置 rtp 头 
+						*/
+						rtp_hdr =(RTP_FIXED_HEADER*)&sendbuf[0]; 
+						rtp_hdr->csrc_len   = 0;
+						rtp_hdr->extension  = 0;
+						rtp_hdr->padding    = 0;
+						rtp_hdr->version    = 2;          //byte0
 						
-						//设置FU HEADER,并将这个HEADER填入sendbuf[13]
-						fu_hdr =(FU_HEADER*)&sendbuf[13];
-						fu_hdr->E=0;
-						fu_hdr->R=0;
-						fu_hdr->S=1;
-						fu_hdr->TYPE=nNaluType;
+						rtp_hdr->payload    = RTP_H264;   //负载类型号，
+						rtp_hdr->marker     = 0;          //标志位，由具体协议规定其值。
 						
-						nalu_payload=&sendbuf[14];
-						memcpy(nalu_payload,g_rtpPack[nChanNum].audBuf,1400);
+						rtp_hdr->seq_no     = htons(g_rtspClients[i].seqnum++); //序列号，每发送一个RTP包增1
 						
-						bytes=1400+14;						
+						rtp_hdr->timestamp  = htonl(ts_current);
+						
+						rtp_hdr->ssrc       = htonl(10);   //随机指定为10，并且在本RTP会话中全局唯一
+
+						/*
+		            	 * 2. 设置rtp荷载 single nal unit 头
+		             	 */
+						fu_ind             = (FU_INDICATOR*)&sendbuf[12]; 
+						fu_ind->F          = (u8NaluBytes & 0x80) >> 7; 
+						fu_ind->NRI        = (u8NaluBytes & 0x60) >> 5 ; 
+						fu_ind->TYPE       = 28;
+
+						fu_hdr            =(FU_HEADER*)&sendbuf[13];
+						fu_hdr->E         = 0;
+						fu_hdr->R         = 0;
+						fu_hdr->S         = 1;
+						fu_hdr->TYPE      = u8NaluBytes & 0x1f;  //n->nal_unit_type;
+
+						/*
+                         * 3. 填充nalu内容
+                         */
+						memcpy(sendbuf+14,g_rtpPack[nChanNum].vidBuf+1,1400-1);//去掉NALU头
+
+						/*
+                     	 * 4. 发送打包好的rtp包到客户端
+                         */
+                        bytes=1400-1+14;						
 						sendto( udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
-						t++;
+                 	 }
+					 else if(fu_seq < fu_pack_num -1)
+					 {
+						/* 中间的FU-A */
+					 	 /*
+						* 1.设置 rtp 头 
+						*/
+						rtp_hdr =(RTP_FIXED_HEADER*)&sendbuf[0]; 
+						rtp_hdr->csrc_len   = 0;
+						rtp_hdr->extension  = 0;
+						rtp_hdr->padding    = 0;
+						rtp_hdr->version    = 2;          //byte0
 						
-					}
-					else if(k==t)
-					{
+						rtp_hdr->payload    = RTP_H264;   //负载类型号，
+						rtp_hdr->marker     = 0;          //标志位，由具体协议规定其值。
 						
-						//设置rtp M 位；当前传输的是最后一个分片时该位置1
-						rtp_hdr->marker=1;
-						fu_ind =(FU_INDICATOR*)&sendbuf[12]; 
-						fu_ind->F= 0 ;   
-						fu_ind->NRI= nIsIFrm ;  
-						fu_ind->TYPE=28;
+						rtp_hdr->seq_no     = htons(g_rtspClients[i].seqnum++); //序列号，每发送一个RTP包增1
 						
-						//设置FU HEADER,并将这个HEADER填入sendbuf[13]
-						fu_hdr =(FU_HEADER*)&sendbuf[13];
-						fu_hdr->R=0;
-						fu_hdr->S=0;
-						fu_hdr->TYPE= nNaluType;
-						fu_hdr->E=1;
+						rtp_hdr->timestamp  = htonl(ts_current);
 						
-						nalu_payload=&sendbuf[14];
-						memcpy(nalu_payload,g_rtpPack[nChanNum].audBuf+t*1400,l);
-						bytes=l+14;		
-						sendto(udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
-						t++;
-					}
-					else if(t<k && t!=0)
-					{
-						//设置rtp M 位；
-						rtp_hdr->marker=0;
-						//设置FU INDICATOR,并将这个HEADER填入sendbuf[12]
-						fu_ind =(FU_INDICATOR*)&sendbuf[12]; 
-						fu_ind->F=0;  
-						fu_ind->NRI=nIsIFrm;
-						fu_ind->TYPE=28;
+						rtp_hdr->ssrc       = htonl(10);   //随机指定为10，并且在本RTP会话中全局唯一
+
+						/*
+		            	 * 2. 设置rtp荷载 single nal unit 头
+		             	 */
+						fu_ind             = (FU_INDICATOR*)&sendbuf[12]; 
+						fu_ind->F          = (u8NaluBytes & 0x80) >> 7; 
+						fu_ind->NRI        = (u8NaluBytes & 0x60) >> 5 ; 
+						fu_ind->TYPE       = 28;
+
+						fu_hdr            =(FU_HEADER*)&sendbuf[13];
+						fu_hdr->E         = 0;
+						fu_hdr->R         = 0;
+						fu_hdr->S         = 0;
+						fu_hdr->TYPE      = u8NaluBytes & 0x1f;  //n->nal_unit_type;
+
+						/*
+                         * 3. 填充nalu内容
+                         */
+						memcpy(sendbuf+14,g_rtpPack[nChanNum].vidBuf+1400*fu_seq,1400);//去掉NALU头
 						
-						//设置FU HEADER,并将这个HEADER填入sendbuf[13]
-						fu_hdr =(FU_HEADER*)&sendbuf[13];
-						//fu_hdr->E=0;
-						fu_hdr->R=0;
-						fu_hdr->S=0;
-						fu_hdr->E=0;
-						fu_hdr->TYPE=nNaluType;
+						/*
+                     	 * 4. 发送打包好的rtp包到客户端
+                         */
+                        bytes=1400+14;						
+						sendto( udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
 						
-						nalu_payload=&sendbuf[14];
-						memcpy(nalu_payload,g_rtpPack[nChanNum].audBuf+t*1400,1400);
-						bytes=1400+14;						
-						sendto(udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
-						t++;
-					}
-				}
-			} 
-#endif			
+					 }
+					 else
+					 {
+						/* 最后一个FU-A */
+					 	 /*
+						* 1.设置 rtp 头 
+						*/
+						rtp_hdr =(RTP_FIXED_HEADER*)&sendbuf[0]; 
+						rtp_hdr->csrc_len   = 0;
+						rtp_hdr->extension  = 0;
+						rtp_hdr->padding    = 0;
+						rtp_hdr->version    = 2;          //byte0
+						
+						rtp_hdr->payload    = RTP_H264;   //负载类型号，
+						rtp_hdr->marker     = 1;          //标志位，由具体协议规定其值。
+						
+						rtp_hdr->seq_no     = htons(g_rtspClients[i].seqnum++); //序列号，每发送一个RTP包增1
+						
+						rtp_hdr->timestamp  = htonl(ts_current);
+						
+						rtp_hdr->ssrc       = htonl(10);   //随机指定为10，并且在本RTP会话中全局唯一
+
+						/*
+		            	 * 2. 设置rtp荷载 single nal unit 头
+		             	 */
+						fu_ind             = (FU_INDICATOR*)&sendbuf[12]; 
+						fu_ind->F          = (u8NaluBytes & 0x80) >> 7; 
+						fu_ind->NRI        = (u8NaluBytes & 0x60) >> 5 ; 
+						fu_ind->TYPE       = 28;
+
+						fu_hdr            =(FU_HEADER*)&sendbuf[13];
+						fu_hdr->E         = 1;
+						fu_hdr->R         = 0;
+						fu_hdr->S         = 0;
+						fu_hdr->TYPE      = u8NaluBytes & 0x1f;  //n->nal_unit_type;
+
+						/*
+                         * 3. 填充nalu内容
+                         */
+						memcpy(sendbuf+14,g_rtpPack[nChanNum].vidBuf+1400*fu_seq,last_fu_pack_size);//去掉NALU头
+						
+						/*
+                     	 * 4. 发送打包好的rtp包到客户端
+                         */
+                        bytes=last_fu_pack_size+14;						
+						sendto( udpfd, sendbuf, bytes, 0, (struct sockaddr *)&server,sizeof(server));
+					 }
+				}			
+			}
 		}
-		//pthread_mutex_unlock(&g_rtpPack.sendmutex);
-		//printf("RTSP:-----Send Frame len %d seq %d\n",nAvFrmLen,g_rtspClients[i].seqnum);
-		//THREAD_SLEEP(1000/25);
 }
 
 
 void AddFrameToRtpListBUf(int nChanNum, unsigned char bIFrm,VENC_STREAM_S *pstStream)
 {
-	//2222222222222222
 	int i,j,lens;
 	g_nSendDataChn = nChanNum;
 	g_rtpPack[nChanNum].nVidLen =0;
@@ -623,8 +580,8 @@ void * SendRtpDataThread(void *p)
 		{
 			
 			RTPbuf_s *p = get_first_item(&RTPbuf_head,RTPbuf_s,list);
-			g_rtpPack[0].nVidLen = p->len;
-		    memcpy(g_rtpPack[0].vidBuf,p->buf,p->len);
+			g_rtpPack[0].nVidLen = p->len-4;
+		    memcpy(g_rtpPack[0].vidBuf,&p->buf[4],p->len-4);
 			SendRtpData();
 			list_del(&(p->list));
 			free(p->buf);
